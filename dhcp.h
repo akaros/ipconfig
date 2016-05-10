@@ -149,8 +149,7 @@ enum {
 	Srebinding,
 };
 
-typedef struct Bootp Bootp;
-struct Bootp {
+struct bootp {
 	// Udphdr (included because of structure alignment on the alpha)
 	uint8_t udphdr[Udphdrsize];
 

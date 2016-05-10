@@ -5,7 +5,7 @@ LIBS=		-lndblib -liplib -lbenchutil
 TARG=		ipconfig
 
 OFILES=		main.o ipv6.o
-HFILES=		dhcp.h icmp.h ipconfig.h lib9.h
+HFILES=		dhcp.h icmp.h ipconfig.h
 
 $(TARG):	$(OFILES)
 		$(CC) -o $(TARG) $(OFILES) $(LIBS)

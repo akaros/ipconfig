@@ -48,30 +48,3 @@ enum {
 
 	ICMP_HDRSIZE = 8,
 };
-
-typedef struct Ip4hdr Ip4hdr;
-struct Ip4hdr {
-	uint8_t vihl;		// Version and header length
-	uint8_t tos;		// Type of service
-	uint8_t length[2];	// packet length
-	uint8_t id[2];		// Identification
-	uint8_t frag[2];	// Fragment information
-	uint8_t ttl;		// Time to live
-	uint8_t proto;		// Protocol
-	uint8_t ipcksum[2];	// Header checksum
-	uint8_t src[4];		// Ipv4 source
-	uint8_t dst[4];		// Ipv4 destination
-
-	uint8_t data[];
-};
-
-// the icmp payload has the same format in v4 and v6
-typedef struct Icmphdr Icmphdr;
-struct Icmphdr {
-	uint8_t type;
-	uint8_t code;
-	uint8_t cksum[2];
-	uint8_t icmpid[2];
-	uint8_t seq[2];
-	uint8_t data[];
-};

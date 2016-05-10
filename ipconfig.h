@@ -7,10 +7,7 @@
  * in the LICENSE file.
  */
 
-typedef struct Conf Conf;
-typedef struct Ctl Ctl;
-
-struct Conf {
+struct conf {
 	// locally generated
 	char *type;
 	char *dev;
@@ -83,15 +80,13 @@ struct Conf {
 	uint32_t preflt;		// preferred lifetime (seconds)
 };
 
-struct Ctl {
-	Ctl *next;
+struct ctl {
+	struct ctl *next;
 	char *ctl;
 };
 
-extern Ctl *firstctl, **ctll;
-
-extern Conf conf;
-
+extern struct ctl *firstctl, **ctll;
+extern struct conf conf;
 extern int noconfig;
 extern int ipv6auto;
 extern int debug;
@@ -100,11 +95,11 @@ extern int dolog;
 extern int nip;
 extern int plan9;
 extern int dupl_disc;
-
 extern int myifc;
 extern char *vs;
 
 void adddefroute(char *, uint8_t *);
+int addoption(char *opt);
 void binddevice(void);
 void bootprequest(void);
 void controldevice(void);
@@ -116,27 +111,35 @@ void dhcpwatch(int);
 void doadd(int);
 void doremove(void);
 void dounbind(void);
+void ea2lla(uint8_t *lla, uint8_t *ea);
 int getndb(void);
+void getoptions(uint8_t *p);
+int ip4cfg(void);
+int ip6cfg(int autoconf);
 int ipconfig4(void);
 int ipconfig6(int);
+void ipv62smcast(uint8_t *smcast, uint8_t *a);
 long jitter(void);
 void lookforip(char *);
 void mkclientid(void);
+void ndbconfig(void);
 int nipifcs(char *);
 int openlisten(void);
+uint8_t *optadd(uint8_t *, int, void *, int);
 uint8_t *optaddaddr(uint8_t *, int, uint8_t *);
 uint8_t *optaddbyte(uint8_t *, int, int);
 uint8_t *optaddstr(uint8_t *, int, char *);
-uint8_t *optadd(uint8_t *, int, void *, int);
 uint8_t *optaddulong(uint8_t *, int, uint32_t);
 uint8_t *optaddvec(uint8_t *, int, uint8_t *, int);
-int optgetaddrs(uint8_t *, int, uint8_t *, int);
-int optgetaddr(uint8_t *, int, uint8_t *);
-int optgetbyte(uint8_t *, int);
-int optgetstr(uint8_t *, int, char *, int);
 uint8_t *optget(uint8_t *, int, int *);
+int optgetaddr(uint8_t *, int, uint8_t *);
+int optgetaddrs(uint8_t *, int, uint8_t *, int);
+int optgetbyte(uint8_t *, int);
+int optgetp9addrs(uint8_t *ap, int op, uint8_t *ip, int n);
+int optgetstr(uint8_t *, int, char *, int);
 uint32_t optgetulong(uint8_t *, int);
 int optgetvec(uint8_t *, int, uint8_t *, int);
+struct bootp *parsebootp(uint8_t *p, int n);
 int parseoptions(uint8_t *p, int n);
 int parseverb(char *);
 void procsetname(char *fmt, ...);
@@ -155,15 +158,7 @@ void doipv6(int);
 int ipconfig6(int);
 void recvra6(void);
 void sendra6(void);
-void v6paraminit(Conf *);
-
-typedef struct Headers Headers;
-typedef struct Ip4hdr Ip4hdr;
-typedef struct Lladdropt Lladdropt;
-typedef struct Mtuopt Mtuopt;
-typedef struct Prefixopt Prefixopt;
-typedef struct Routeradv Routeradv;
-typedef struct Routersol Routersol;
+void v6paraminit(struct conf *);
 
 enum {
 	IsRouter = 1,
@@ -206,12 +201,7 @@ enum {
 	IP_MAX = 32 * 1024,
 };
 
-struct Headers {
-	uint8_t dst[IPaddrlen];
-	uint8_t src[IPaddrlen];
-};
-
-struct Routersol {
+struct routersol {
 	uint8_t vcf[4];		// version:4, traffic class:8, flow label:20
 	uint8_t ploadlen[2];	// payload length: packet length - 40
 	uint8_t proto;		// next header	type
@@ -224,7 +214,7 @@ struct Routersol {
 	uint8_t res[4];
 };
 
-struct Routeradv {
+struct routeradv {
 	uint8_t vcf[4];		// version:4, traffic class:8, flow label:20
 	uint8_t ploadlen[2];	// payload length: packet length - 40
 	uint8_t proto;		// next header type
@@ -241,13 +231,13 @@ struct Routeradv {
 	uint8_t rxmtimer[4];
 };
 
-struct Lladdropt {
+struct lladdropt {
 	uint8_t type;
 	uint8_t len;
 	uint8_t lladdr[MAClen];
 };
 
-struct Prefixopt {
+struct prefixopt {
 	uint8_t type;
 	uint8_t len;
 	uint8_t plen;
@@ -258,12 +248,9 @@ struct Prefixopt {
 	uint8_t pref[IPaddrlen];
 };
 
-struct Mtuopt {
+struct mtuopt {
 	uint8_t type;
 	uint8_t len;
 	uint8_t reserv[2];
 	uint8_t mtu[4];
 };
-
-void ea2lla(uint8_t *lla, uint8_t *ea);
-void ipv62smcast(uint8_t *smcast, uint8_t *a);

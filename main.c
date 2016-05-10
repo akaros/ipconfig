@@ -10,6 +10,7 @@
 /*
  * ipconfig - configure parameters of an ip stack
  */
+
 #include <benchutil/alarm.h>
 #include <iplib/iplib.h>
 #include <ndblib/ndb.h>
@@ -24,13 +25,13 @@
 #include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "dhcp.h"
 #include "ipconfig.h"
-#include "lib9.h"
 
-#define DEBUG if (debug) warning
+#define DEBUG(...) do { if (debug) warning(__VA_ARGS__); } while (0)
 
 /* possible verbs */
 enum {
@@ -58,8 +59,7 @@ enum {
 	Tvec,
 };
 
-typedef struct Option Option;
-struct Option {
+struct option {
 	char *name;
 	int type;
 };
@@ -69,7 +69,7 @@ struct Option {
  * options.  If someone feels like it, please mail me a
  * corrected array -- presotto
  */
-Option option[256] = {
+struct option option[256] = {
     [OBmask] { "ipmask", Taddr },
     [OBtimeoff] { "timeoff", Tulong },
     [OBrouter] { "ipgw", Taddrs },
@@ -129,7 +129,6 @@ Option option[256] = {
     [OBircserver] { "irc", Taddrs },
     [OBstserver] { "st", Taddrs },
     [OBstdaserver] { "stdar", Taddrs },
-
     [ODipaddr] { "ipaddr", Taddr },
     [ODlease] { "lease", Tulong },
     [ODoverload] { "overload", Taddr },
@@ -156,14 +155,14 @@ int nrequested;
 char *argv0;
 int Oflag;
 int beprimary = -1;
-Conf conf;
+struct conf conf;
 int debug;
 int dodhcp;
-int dondbconfig = 0;
+int dondbconfig;
 int dupl_disc = 1; /* flag: V6 duplicate neighbor discovery */
-Ctl *firstctl, **ctll;
+struct ctl *firstctl, **ctll;
 struct ipifc *ifc;
-int ipv6auto = 0;
+int ipv6auto;
 int myifc = -1;
 char *ndboptions;
 int nip;
@@ -187,118 +186,28 @@ char *verbs[] = {
     [Vpkt] "pkt",
 };
 
-void adddefroute(char *, uint8_t *);
-int addoption(char *);
-void binddevice(void);
-void bootprequest(void);
-void controldevice(void);
-void dhcpquery(int, int);
-void dhcprecv(void);
-void dhcpsend(int);
-int dhcptimer(void);
-void dhcpwatch(int);
-void doadd(int);
-void doremove(void);
-void dounbind(void);
-int getndb(void);
-void getoptions(uint8_t *);
-int ip4cfg(void);
-int ip6cfg(int a);
-void lookforip(char *);
-void mkclientid(void);
-void ndbconfig(void);
-int nipifcs(char *);
-int openlisten(void);
-uint8_t *optaddaddr(uint8_t *, int, uint8_t *);
-uint8_t *optaddbyte(uint8_t *, int, int);
-uint8_t *optaddstr(uint8_t *, int, char *);
-uint8_t *optadd(uint8_t *, int, void *, int);
-uint8_t *optaddulong(uint8_t *, int, uint32_t);
-uint8_t *optaddvec(uint8_t *, int, uint8_t *, int);
-int optgetaddrs(uint8_t *, int, uint8_t *, int);
-int optgetp9addrs(uint8_t *, int, uint8_t *, int);
-int optgetaddr(uint8_t *, int, uint8_t *);
-int optgetbyte(uint8_t *, int);
-int optgetstr(uint8_t *, int, char *, int);
-uint8_t *optget(uint8_t *, int, int *);
-uint32_t optgetulong(uint8_t *, int);
-int optgetvec(uint8_t *, int, uint8_t *, int);
-char *optgetx(uint8_t *, uint8_t);
-Bootp *parsebootp(uint8_t *, int);
-int parseoptions(uint8_t *p, int n);
-int parseverb(char *);
-void putndb(void);
-void tweakservers(void);
-void usage(void);
-int validip(uint8_t *);
-void writendb(char *, int, int);
-
-void
-usage(void)
+void usage(void)
 {
 	fprintf(stderr,
-	        "usage: %s [-6dDGnNOpPruX][-b baud][-c ctl]* [-g gw]"
-	        "[-h host][-m mtu]\n"
-	        "\t[-x mtpt][-o dhcpopt] type dev [verb] [laddr [mask "
-	        "[raddr [fs [auth]]]]]\n",
-	        argv0);
-	fprintf(stderr, "usage");
+	        "usage: %s %s\n\t%s\n",
+	        argv0,
+	        "[-6dDGnNOpPruX][-b baud][-c ctl]* [-g gw] [-h host][-m mtu]",
+	        "[-x mtpt][-o dhcpopt] type dev [verb] [laddr [mask [raddr [fs [auth]]]]]");
 	exit(1);
 }
 
-void
-warning(char *fmt, ...)
+void warning(char *fmt, ...)
 {
 	char buf[1024];
 	va_list arg;
 
 	va_start(arg, fmt);
-	vsnprintf(buf, sizeof buf, fmt, arg);
+	vsnprintf(buf, sizeof(buf), fmt, arg);
 	va_end(arg);
 	fprintf(stderr, "%s: %s\n", argv0, buf);
 }
 
-size_t
-strlcpy(char *dst, const char *src, size_t size)
-{
-	if (size > 0) {
-		while (--size > 0 && *src != '\0')
-			*dst++ = *src++;
-		*dst = '\0';
-	}
-
-	return strlen(src);
-}
-
-size_t
-strlcat(char *dst, const char *src, size_t size)
-{
-	size_t rem; /* Buffer space remaining after null in dst. */
-
-	/* We must find the terminating NUL byte in dst, but abort the
-	 * search if we go past 'size' bytes.  At the end of this loop,
-	 * 'dst' will point to either the NUL byte in the original
-	 * destination or to one byte beyond the end of the buffer.
-	 *
-	 * 'rem' will be the amount of 'size' remaining beyond the NUL byte;
-	 * potentially zero. This implies that 'size - rem' is equal to the
-	 * distance from the beginning of the destination buffer to 'dst'.
-	 *
-	 * The return value of strlcat is the sum of the length of the
-	 * original destination buffer (size - rem) plus the size of the
-	 * src string (the return value of strlcpy).
-	 */
-	rem = size;
-	while ((rem > 0) && (*dst != '\0')) {
-		rem--;
-		dst++;
-	}
-
-	return (size - rem) + strlcpy(dst, src, rem);
-}
-
-static char *
-sysname(void)
+char *sysname(void)
 {
 	static char sname[256];
 
@@ -307,8 +216,7 @@ sysname(void)
 	return sname;
 }
 
-static void
-parsenorm(int argc, char **argv)
+void parsenorm(int argc, char **argv)
 {
 	switch (argc) {
 	case 5:
@@ -342,8 +250,7 @@ parsenorm(int argc, char **argv)
 	}
 }
 
-static void
-parse6pref(int argc, char **argv)
+void parse6pref(int argc, char **argv)
 {
 	switch (argc) {
 	case 6:
@@ -372,8 +279,7 @@ parse6pref(int argc, char **argv)
 }
 
 /* parse router advertisement (keyword, value) pairs */
-static void
-parse6ra(int argc, char **argv)
+void parse6ra(int argc, char *argv[])
 {
 	int i, argsleft;
 	char *kw, *val;
@@ -422,18 +328,18 @@ parse6ra(int argc, char **argv)
 	}
 }
 
-static void
-init(void)
+void init(void)
 {
 	srand(lrand48());
-	if (register_printf_specifier('E', printf_ethaddr, printf_ethaddr_info) != 0)
+	if (register_printf_specifier('E', printf_ethaddr,
+	                              printf_ethaddr_info) != 0)
 		fprintf(stderr, "Installing 'E' failed\n");
 	if (register_printf_specifier('R', printf_ipaddr, printf_ipaddr_info) != 0)
 		fprintf(stderr, "Installing 'i' failed\n");
 	if (register_printf_specifier('M', printf_ipmask, printf_ipmask_info) != 0)
 		fprintf(stderr, "Installing 'M' failed\n");
 
-	setnetmtpt(conf.mpoint, sizeof conf.mpoint, NULL);
+	setnetmtpt(conf.mpoint, sizeof(conf).mpoint, NULL);
 	conf.cputype = getenv("cputype");
 	if (conf.cputype == NULL)
 		conf.cputype = "386";
@@ -442,12 +348,11 @@ init(void)
 	v6paraminit(&conf);
 
 	/* init set of requested dhcp parameters with the default */
-	nrequested = sizeof defrequested;
+	nrequested = sizeof(defrequested);
 	memcpy(requested, defrequested, nrequested);
 }
 
-static int
-parseargs(int argc, char **argv)
+int parseargs(int argc, char *argv[])
 {
 	char *p;
 	int action, verb;
@@ -458,7 +363,7 @@ parseargs(int argc, char **argv)
 		if (p == NULL || *p == 0)
 			p = sysname();
 		if (p != NULL)
-			strncpy(conf.hostname, p, sizeof conf.hostname - 1);
+			strncpy(conf.hostname, p, sizeof(conf).hostname - 1);
 	}
 
 	/* defaults */
@@ -527,89 +432,91 @@ parseargs(int argc, char **argv)
 	return action;
 }
 
-int
-main(int argc, char **argv)
+int main(int argc, char *argv[])
 {
-	int retry, action;
-	Ctl *cp;
+	int retry, action, ch;
+	struct ctl *cp;
 
 	init();
 	retry = 0;
-	ARGBEGIN
-	{
-	case '6': /* IPv6 auto config */
-		ipv6auto = 1;
-		break;
-	case 'b':
-		conf.baud = EARGF(usage());
-		break;
-	case 'c':
-		cp = malloc(sizeof *cp);
-		if (cp == NULL) {
-			fprintf(stderr, "%r");
-			exit(1);
+	while ((ch = getopt(argc, argv, "6b:c:dDg:h:m:nNo:OpPrux:X")) != -1) {
+		switch (ch) {
+		case '6': /* IPv6 auto config */
+			ipv6auto = 1;
+			break;
+		case 'b':
+			conf.baud = optarg;
+			break;
+		case 'c':
+			cp = malloc(sizeof(*cp));
+			if (cp == NULL) {
+				fprintf(stderr, "%r");
+				exit(1);
+			}
+			*ctll = cp;
+			ctll = &cp->next;
+			cp->next = NULL;
+			cp->ctl = optarg;
+			break;
+		case 'd':
+			dodhcp = 1;
+			break;
+		case 'D':
+			debug = 1;
+			break;
+		case 'g':
+			if (parseip(conf.gaddr, optarg) == -1)
+				usage();
+			break;
+		case 'G':
+			plan9 = 0;
+			break;
+		case 'h':
+			snprintf(conf.hostname, sizeof(conf).hostname,
+			         "%s", optarg);
+			sendhostname = 1;
+			break;
+		case 'm':
+			conf.mtu = atoi(optarg);
+			break;
+		case 'n':
+			noconfig = 1;
+			break;
+		case 'N':
+			dondbconfig = 1;
+			break;
+		case 'o':
+			if (addoption(optarg) < 0)
+				usage();
+			break;
+		case 'O':
+			Oflag = 1;
+			break;
+		case 'p':
+			beprimary = 1;
+			break;
+		case 'P':
+			beprimary = 0;
+			break;
+		case 'r':
+			retry = 1;
+			break;
+		case 'u': /* IPv6: duplicate neighbour disc. off */
+			dupl_disc = 0;
+			break;
+		case 'x':
+			setnetmtpt(conf.mpoint, sizeof(conf).mpoint, optarg);
+			break;
+		case 'X':
+			nodhcpwatch = 1;
+			break;
+		default:
+			usage();
 		}
-		*ctll = cp;
-		ctll = &cp->next;
-		cp->next = NULL;
-		cp->ctl = EARGF(usage());
-		break;
-	case 'd':
-		dodhcp = 1;
-		break;
-	case 'D':
-		debug = 1;
-		break;
-	case 'g':
-		if (parseip(conf.gaddr, EARGF(usage())) == -1)
-			usage();
-		break;
-	case 'G':
-		plan9 = 0;
-		break;
-	case 'h':
-		snprintf(conf.hostname, sizeof conf.hostname, "%s", EARGF(usage()));
-		sendhostname = 1;
-		break;
-	case 'm':
-		conf.mtu = atoi(EARGF(usage()));
-		break;
-	case 'n':
-		noconfig = 1;
-		break;
-	case 'N':
-		dondbconfig = 1;
-		break;
-	case 'o':
-		if (addoption(EARGF(usage())) < 0)
-			usage();
-		break;
-	case 'O':
-		Oflag = 1;
-		break;
-	case 'p':
-		beprimary = 1;
-		break;
-	case 'P':
-		beprimary = 0;
-		break;
-	case 'r':
-		retry = 1;
-		break;
-	case 'u': /* IPv6: duplicate neighbour disc. off */
-		dupl_disc = 0;
-		break;
-	case 'x':
-		setnetmtpt(conf.mpoint, sizeof conf.mpoint, EARGF(usage()));
-		break;
-	case 'X':
-		nodhcpwatch = 1;
-		break;
-	default:
-		usage();
 	}
-	ARGEND;
 	argv0 = "ipconfig"; /* boot invokes us as tcp? */
+	argc -= optind;
+	argv += optind;
 
 	action = parseargs(argc, argv);
 	switch (action) {
@@ -631,23 +538,20 @@ main(int argc, char **argv)
 	return 0;
 }
 
-int
-havendb(char *net)
+int havendb(char *net)
 {
 	struct stat s;
 	char buf[128];
 
-	snprintf(buf, sizeof buf, "%s/ndb", net);
+	snprintf(buf, sizeof(buf), "%s/ndb", net);
 	if (stat(buf, &s) < 0)
 		return 0;
-	if (s.st_size == 0) {
+	if (s.st_size == 0)
 		return 0;
-	}
 	return 1;
 }
 
-void
-doadd(int retry)
+void doadd(int retry)
 {
 	int tries;
 
@@ -690,7 +594,7 @@ doadd(int retry)
 			dhcpquery(!noconfig, Sselecting);
 			if (conf.state == Sbound)
 				break;
-			sleep(1000);
+			usleep(1000 * 1000);
 		}
 	}
 
@@ -703,7 +607,7 @@ doadd(int retry)
 		fprintf(stderr, "no success with DHCP");
 		exit(-1);
 	}
-			
+
 
 	if (!noconfig) {
 		if (ip4cfg() < 0) {
@@ -721,8 +625,7 @@ doadd(int retry)
 	}
 }
 
-void
-doremove(void)
+void doremove(void)
 {
 	char file[128];
 	char buf[256];
@@ -746,14 +649,14 @@ doremove(void)
 			if (validip(conf.raddr) && ipcmp(conf.raddr, lifc->net) != 0)
 				continue;
 
-			snprintf(file, sizeof file, "%s/ipifc/%d/ctl",
+			snprintf(file, sizeof(file), "%s/ipifc/%d/ctl",
 			         conf.mpoint, nifc->index);
 			cfd = open(file, O_RDWR);
 			if (cfd < 0) {
 				warning("can't open %s: %r", conf.mpoint);
 				continue;
 			}
-			snprintf(buf, sizeof buf, "remove %R %M", lifc->ip, lifc->mask);
+			snprintf(buf, sizeof(buf), "remove %R %M", lifc->ip, lifc->mask);
 			if (write(cfd, buf, strlen(buf)) != strlen(buf))
 				warning("can't remove %R %M from %s: %r",
 				        lifc->ip, lifc->mask, file);
@@ -762,8 +665,7 @@ doremove(void)
 	}
 }
 
-void
-dounbind(void)
+void dounbind(void)
 {
 	struct ipifc *nifc;
 	char file[128];
@@ -772,7 +674,7 @@ dounbind(void)
 	ifc = readipifc(conf.mpoint, ifc, -1);
 	for (nifc = ifc; nifc != NULL; nifc = nifc->next) {
 		if (strcmp(nifc->dev, conf.dev) == 0) {
-			snprintf(file, sizeof file, "%s/ipifc/%d/ctl",
+			snprintf(file, sizeof(file), "%s/ipifc/%d/ctl",
 			         conf.mpoint, nifc->index);
 			cfd = open(file, O_RDWR);
 			if (cfd < 0) {
@@ -788,8 +690,7 @@ dounbind(void)
 }
 
 /* set the default route */
-void
-adddefroute(char *mpoint, uint8_t *gaddr)
+void adddefroute(char *mpoint, uint8_t *gaddr)
 {
 	char buf[256];
 	int cfd;
@@ -800,16 +701,15 @@ adddefroute(char *mpoint, uint8_t *gaddr)
 		return;
 
 	if (isv4(gaddr))
-		snprintf(buf, sizeof buf, "add 0 0 %R", gaddr);
+		snprintf(buf, sizeof(buf), "add 0 0 %R", gaddr);
 	else
-		snprintf(buf, sizeof buf, "add :: /0 %R", gaddr);
+		snprintf(buf, sizeof(buf), "add :: /0 %R", gaddr);
 	write(cfd, buf, strlen(buf));
 	close(cfd);
 }
 
 /* create a client id */
-void
-mkclientid(void)
+void mkclientid(void)
 {
 	if ((strcmp(conf.type, "ether") == 0) || (strcmp(conf.type, "gbe") == 0)) {
 		if (myetheraddr(conf.hwa, conf.dev) == 0) {
@@ -820,7 +720,7 @@ mkclientid(void)
 			conf.cidlen = conf.hwalen + 1;
 		} else {
 			conf.hwatype = -1;
-			snprintf((char *)conf.cid, sizeof conf.cid, "plan9_%ld.%d",
+			snprintf((char *)conf.cid, sizeof(conf).cid, "plan9_%ld.%d",
 			         lrand48(), getpid());
 			conf.cidlen = strlen((char *)conf.cid);
 		}
@@ -828,13 +728,12 @@ mkclientid(void)
 }
 
 /* bind ip into the namespace */
-void
-lookforip(char *net)
+void lookforip(char *net)
 {
 	struct stat s;
 	char proto[64];
 
-	snprintf(proto, sizeof proto, "%s/ipifc", net);
+	snprintf(proto, sizeof(proto), "%s/ipifc", net);
 	if (stat(proto, &s) < 0) {
 		fprintf(stderr, "no ip stack bound onto %s", net);
 		exit(-1);
@@ -842,18 +741,17 @@ lookforip(char *net)
 }
 
 /* send some ctls to a device */
-void
-controldevice(void)
+void controldevice(void)
 {
 	char ctlfile[256];
 	int fd;
-	Ctl *cp;
+	struct ctl *cp;
 
 	if (firstctl == NULL ||
 	    (strcmp(conf.type, "ether") != 0 && strcmp(conf.type, "gbe") != 0))
 		return;
 
-	snprintf(ctlfile, sizeof ctlfile, "%s/clone", conf.dev);
+	snprintf(ctlfile, sizeof(ctlfile), "%s/clone", conf.dev);
 	fd = open(ctlfile, O_RDWR);
 	if (fd < 0) {
 		fprintf(stderr, "can't open %s", ctlfile);
@@ -870,14 +768,13 @@ controldevice(void)
 }
 
 /* bind an ip stack to a device, leave the control channel open */
-void
-binddevice(void)
+void binddevice(void)
 {
 	char buf[256];
 
 	if (myifc < 0) {
 		/* get a new ip interface */
-		snprintf(buf, sizeof buf, "%s/ipifc/clone", conf.mpoint);
+		snprintf(buf, sizeof(buf), "%s/ipifc/clone", conf.mpoint);
 		conf.cfd = open(buf, O_RDWR);
 		if (conf.cfd < 0) {
 			fprintf(stderr, "opening %s/ipifc/clone: %r", conf.mpoint);
@@ -885,14 +782,14 @@ binddevice(void)
 		}
 
 		/* specify medium as ethernet, bind the interface to it */
-		snprintf(buf, sizeof buf, "bind %s %s", conf.type, conf.dev);
+		snprintf(buf, sizeof(buf), "bind %s %s", conf.type, conf.dev);
 		if (write(conf.cfd, buf, strlen(buf)) != strlen(buf)) {
 			fprintf(stderr, "%s: bind %s %s: %r", buf, conf.type, conf.dev);
 			exit(-1);
 		}
 	} else {
 		/* open the old interface */
-		snprintf(buf, sizeof buf, "%s/ipifc/%d/ctl", conf.mpoint, myifc);
+		snprintf(buf, sizeof(buf), "%s/ipifc/%d/ctl", conf.mpoint, myifc);
 		conf.cfd = open(buf, O_RDWR);
 		if (conf.cfd < 0) {
 			fprintf(stderr, "open %s: %r", buf);
@@ -902,8 +799,7 @@ binddevice(void)
 }
 
 /* add a logical interface to the ip stack */
-int
-ip4cfg(void)
+int ip4cfg(void)
 {
 	char buf[256];
 	int n;
@@ -911,17 +807,17 @@ ip4cfg(void)
 	if (!validip(conf.laddr))
 		return -1;
 
-	n = snprintf(buf, sizeof buf, "add");
-	n += snprintf(buf + n, sizeof buf - n, " %R", conf.laddr);
+	n = snprintf(buf, sizeof(buf), "add");
+	n += snprintf(buf + n, sizeof(buf) - n, " %R", conf.laddr);
 
 	if (!validip(conf.mask))
 		ipmove(conf.mask, defmask(conf.laddr));
-	n += snprintf(buf + n, sizeof buf - n, " %R", conf.mask);
+	n += snprintf(buf + n, sizeof(buf) - n, " %R", conf.mask);
 
 	if (validip(conf.raddr)) {
-		n += snprintf(buf + n, sizeof buf - n, " %R", conf.raddr);
+		n += snprintf(buf + n, sizeof(buf) - n, " %R", conf.raddr);
 		if (conf.mtu != 0)
-			n += snprintf(buf + n, sizeof buf - n, " %d", conf.mtu);
+			n += snprintf(buf + n, sizeof(buf) - n, " %d", conf.mtu);
 	}
 
 	if (write(conf.cfd, buf, n) < 0) {
@@ -936,8 +832,7 @@ ip4cfg(void)
 }
 
 /* remove a logical interface to the ip stack */
-void
-ipunconfig(void)
+void ipunconfig(void)
 {
 	char buf[256];
 	int n;
@@ -946,11 +841,11 @@ ipunconfig(void)
 		return;
 	DEBUG("couldn't renew IP lease, releasing %R", conf.laddr);
 	n = sprintf(buf, "remove");
-	n += snprintf(buf + n, sizeof buf - n, " %R", conf.laddr);
+	n += snprintf(buf + n, sizeof(buf) - n, " %R", conf.laddr);
 
 	if (!validip(conf.mask))
 		ipmove(conf.mask, defmask(conf.laddr));
-	n += snprintf(buf + n, sizeof buf - n, " %R", conf.mask);
+	n += snprintf(buf + n, sizeof(buf) - n, " %R", conf.mask);
 
 	write(conf.cfd, buf, n);
 
@@ -963,13 +858,12 @@ ipunconfig(void)
 		writendb("", 0, 0);
 }
 
-void
-dhcpquery(int needconfig, int startstate)
+void dhcpquery(int needconfig, int startstate)
 {
 	char buf[256];
 
 	if (needconfig) {
-		snprintf(buf, sizeof buf, "add %R %R", IPnoaddr, IPnoaddr);
+		snprintf(buf, sizeof(buf), "add %R %R", IPnoaddr, IPnoaddr);
 		write(conf.cfd, buf, strlen(buf));
 	}
 
@@ -978,7 +872,6 @@ dhcpquery(int needconfig, int startstate)
 		conf.state = Sinit;
 		return;
 	}
-	// notify(ding);
 
 	/* try dhcp for 10 seconds */
 	conf.xid = lrand48();
@@ -1009,7 +902,7 @@ dhcpquery(int needconfig, int startstate)
 	close(conf.fd);
 
 	if (needconfig) {
-		snprintf(buf, sizeof buf, "remove %R %R", IPnoaddr, IPnoaddr);
+		snprintf(buf, sizeof(buf), "remove %R %R", IPnoaddr, IPnoaddr);
 		write(conf.cfd, buf, strlen(buf));
 	}
 }
@@ -1020,8 +913,7 @@ enum {
 	Maxsleep = 450,
 };
 
-void
-dhcpwatch(int needconfig)
+void dhcpwatch(int needconfig)
 {
 	int secs, s;
 	uint32_t t;
@@ -1050,7 +942,7 @@ dhcpwatch(int needconfig)
 				t = Maxsleep;
 			else
 				t = s;
-			sleep(t * 1000);
+			usleep(t * 1000 * 1000);
 		}
 
 		if (conf.lease > 0) {
@@ -1090,8 +982,7 @@ dhcpwatch(int needconfig)
 	}
 }
 
-int
-dhcptimer(void)
+int dhcptimer(void)
 {
 	uint32_t now;
 
@@ -1128,16 +1019,15 @@ dhcptimer(void)
 	return 0;
 }
 
-void
-dhcpsend(int type)
+void dhcpsend(int type)
 {
-	Bootp bp;
+	struct bootp bp;
 	uint8_t *p;
 	int n;
 	uint8_t vendor[64];
 	struct udphdr *up = (struct udphdr *)bp.udphdr;
 
-	memset(&bp, 0, sizeof bp);
+	memset(&bp, 0, sizeof(bp));
 
 	hnputs(up->rport, 67);
 	bp.op = Bootrequest;
@@ -1145,7 +1035,7 @@ dhcpsend(int type)
 	hnputs(bp.secs, time(0) - conf.starttime);
 	hnputs(bp.flags, 0);
 	memmove(bp.optmagic, optmagic, 4);
-	if (conf.hwatype >= 0 && conf.hwalen < sizeof bp.chaddr) {
+	if (conf.hwatype >= 0 && conf.hwalen < sizeof(bp).chaddr) {
 		memmove(bp.chaddr, conf.hwa, conf.hwalen);
 		bp.hlen = conf.hwalen;
 		bp.htype = conf.hwatype;
@@ -1162,7 +1052,7 @@ dhcpsend(int type)
 		if (*conf.hostname && sendhostname)
 			p = optaddstr(p, OBhostname, conf.hostname);
 		if (plan9) {
-			n = snprintf((char *)vendor, sizeof vendor, "plan9_%s",
+			n = snprintf((char *)vendor, sizeof(vendor), "plan9_%s",
 			             conf.cputype);
 			p = optaddvec(p, ODvendorclass, vendor, n);
 		}
@@ -1188,7 +1078,7 @@ dhcpsend(int type)
 		}
 		p = optaddulong(p, ODlease, conf.offered);
 		if (plan9) {
-			n = snprintf((char *)vendor, sizeof vendor, "plan9_%s",
+			n = snprintf((char *)vendor, sizeof(vendor), "plan9_%s",
 			             conf.cputype);
 			p = optaddvec(p, ODvendorclass, vendor, n);
 		}
@@ -1215,38 +1105,35 @@ dhcpsend(int type)
 	 * same size, so if the request is too short the reply
 	 * is truncated.
 	 */
-	if (write(conf.fd, &bp, sizeof bp) != sizeof bp)
+	if (write(conf.fd, &bp, sizeof(bp)) != sizeof(bp))
 		warning("dhcpsend: write failed: %r");
 }
 
-void
-rerrstr(char *buf, size_t buflen)
+void rerrstr(char *buf, size_t buflen)
 {
-	char *e = errstr();
-	strlcpy(buf, e, buflen);
+	snprintf(buf, buflen, "%s", errstr());
 }
 
-void
-dhcprecv(void)
+void dhcprecv(void)
 {
 	int i, n, type;
 	uint32_t lease;
 	char err[256];
 	uint8_t buf[8000], vopts[256], taddr[IPaddrlen];
-	Bootp *bp;
+	struct bootp *bp;
 	struct alarm_waiter waiter;
 
 	init_awaiter(&waiter, alarm_abort_sysc);
 	waiter.data = current_uthread;
 
-	memset(buf, 0, sizeof buf);
+	memset(buf, 0, sizeof(buf));
 	set_awaiter_rel(&waiter, 1000 * 1000);
 	set_alarm(&waiter);
-	n = read(conf.fd, buf, sizeof buf);
+	n = read(conf.fd, buf, sizeof(buf));
 	unset_alarm(&waiter);
 
 	if (n < 0) {
-		rerrstr(err, sizeof err);
+		rerrstr(err, sizeof(err));
 		if (strstr(err, "interrupt") == NULL)
 			warning("dhcprecv: bad read: %s", err);
 		else
@@ -1291,8 +1178,8 @@ dhcprecv(void)
 		}
 
 		v4tov6(conf.laddr, bp->yiaddr);
-		memmove(conf.sname, bp->sname, sizeof conf.sname);
-		conf.sname[sizeof conf.sname - 1] = 0;
+		memmove(conf.sname, bp->sname, sizeof(conf).sname);
+		conf.sname[sizeof(conf).sname - 1] = 0;
 		DEBUG("server=%R sname=%s", conf.server, conf.sname);
 		conf.offered = lease;
 		conf.state = Srequesting;
@@ -1341,29 +1228,30 @@ dhcprecv(void)
 		}
 
 		/* get dns servers */
-		memset(conf.dns, 0, sizeof conf.dns);
+		memset(conf.dns, 0, sizeof(conf).dns);
 		n = optgetaddrs(bp->optdata, OBdnserver, conf.dns,
-		                sizeof conf.dns / IPaddrlen);
+		                sizeof(conf).dns / IPaddrlen);
 		for (i = 0; i < n; i++)
 			DEBUG("dns=%R ", conf.dns + i * IPaddrlen);
 
 		/* get ntp servers */
-		memset(conf.ntp, 0, sizeof conf.ntp);
+		memset(conf.ntp, 0, sizeof(conf).ntp);
 		n = optgetaddrs(bp->optdata, OBntpserver, conf.ntp,
-		                sizeof conf.ntp / IPaddrlen);
+		                sizeof(conf).ntp / IPaddrlen);
 		for (i = 0; i < n; i++)
 			DEBUG("ntp=%R ", conf.ntp + i * IPaddrlen);
 
 		/* get names */
-		optgetstr(bp->optdata, OBhostname, conf.hostname, sizeof conf.hostname);
-		optgetstr(bp->optdata, OBdomainname, conf.domainname,
-		          sizeof conf.domainname);
+		optgetstr(bp->optdata, OBhostname,
+		          conf.hostname, sizeof(conf).hostname);
+		optgetstr(bp->optdata, OBdomainname,
+		          conf.domainname, sizeof(conf).domainname);
 
 		/* get anything else we asked for */
 		getoptions(bp->optdata);
 
 		/* get plan9-specific options */
-		n = optgetvec(bp->optdata, OBvendorinfo, vopts, sizeof vopts - 1);
+		n = optgetvec(bp->optdata, OBvendorinfo, vopts, sizeof(vopts) - 1);
 		if (n > 0 && parseoptions(vopts, n) == 0) {
 			if (validip(conf.fs) && Oflag)
 				n = 1;
@@ -1409,21 +1297,20 @@ dhcprecv(void)
 }
 
 /* return pseudo-random integer in range low...(hi-1) */
-uint32_t
-randint(uint32_t low, uint32_t hi)
+uint32_t randint(uint32_t low, uint32_t hi)
 {
 	if (hi < low)
 		return low;
 	return low + (lrand48() % hi);
 }
 
-long jitter(void) /* compute small pseudo-random delay in ms */
+// compute small pseudo-random delay in ms
+long jitter(void)
 {
 	return randint(0, 10 * 1000);
 }
 
-int
-openlisten(void)
+int openlisten(void)
 {
 	int n, fd, cfd;
 	char data[128], devdir[40];
@@ -1441,7 +1328,7 @@ openlisten(void)
 
 		/* might be another client - wait and try again */
 		warning("can't announce %s: %r", data);
-		sleep(jitter());
+		usleep(jitter() * 1000);
 		if (n > 10)
 			return -1;
 	}
@@ -1461,8 +1348,7 @@ openlisten(void)
 	return fd;
 }
 
-uint8_t *
-optadd(uint8_t *p, int op, void *d, int n)
+uint8_t *optadd(uint8_t *p, int op, void *d, int n)
 {
 	p[0] = op;
 	p[1] = n;
@@ -1470,8 +1356,7 @@ optadd(uint8_t *p, int op, void *d, int n)
 	return p + n + 2;
 }
 
-uint8_t *
-optaddbyte(uint8_t *p, int op, int b)
+uint8_t *optaddbyte(uint8_t *p, int op, int b)
 {
 	p[0] = op;
 	p[1] = 1;
@@ -1479,8 +1364,7 @@ optaddbyte(uint8_t *p, int op, int b)
 	return p + 3;
 }
 
-uint8_t *
-optaddulong(uint8_t *p, int op, uint32_t x)
+uint8_t *optaddulong(uint8_t *p, int op, uint32_t x)
 {
 	p[0] = op;
 	p[1] = 4;
@@ -1488,8 +1372,7 @@ optaddulong(uint8_t *p, int op, uint32_t x)
 	return p + 6;
 }
 
-uint8_t *
-optaddaddr(uint8_t *p, int op, uint8_t *ip)
+uint8_t *optaddaddr(uint8_t *p, int op, uint8_t *ip)
 {
 	p[0] = op;
 	p[1] = 4;
@@ -1498,8 +1381,7 @@ optaddaddr(uint8_t *p, int op, uint8_t *ip)
 }
 
 /* add dhcp option op with value v of length n to dhcp option array p */
-uint8_t *
-optaddvec(uint8_t *p, int op, uint8_t *v, int n)
+uint8_t *optaddvec(uint8_t *p, int op, uint8_t *v, int n)
 {
 	p[0] = op;
 	p[1] = n;
@@ -1507,8 +1389,7 @@ optaddvec(uint8_t *p, int op, uint8_t *v, int n)
 	return p + 2 + n;
 }
 
-uint8_t *
-optaddstr(uint8_t *p, int op, char *v)
+uint8_t *optaddstr(uint8_t *p, int op, char *v)
 {
 	int n;
 
@@ -1524,8 +1405,7 @@ optaddstr(uint8_t *p, int op, char *v)
  * return NULL if option is too small, else ptr to opt, and
  * store actual length via np if non-nil.
  */
-uint8_t *
-optget(uint8_t *p, int op, int *np)
+uint8_t *optget(uint8_t *p, int op, int *np)
 {
 	int len, code;
 
@@ -1538,9 +1418,8 @@ optget(uint8_t *p, int op, int *np)
 			continue;
 		}
 		if (np != NULL) {
-			if (*np > len) {
+			if (*np > len)
 				return 0;
-			}
 			*np = len;
 		}
 		return p;
@@ -1548,8 +1427,7 @@ optget(uint8_t *p, int op, int *np)
 	return 0;
 }
 
-int
-optgetbyte(uint8_t *p, int op)
+int optgetbyte(uint8_t *p, int op)
 {
 	int len;
 
@@ -1560,8 +1438,7 @@ optgetbyte(uint8_t *p, int op)
 	return *p;
 }
 
-uint32_t
-optgetulong(uint8_t *p, int op)
+uint32_t optgetulong(uint8_t *p, int op)
 {
 	int len;
 
@@ -1572,8 +1449,7 @@ optgetulong(uint8_t *p, int op)
 	return nhgetl(p);
 }
 
-int
-optgetaddr(uint8_t *p, int op, uint8_t *ip)
+int optgetaddr(uint8_t *p, int op, uint8_t *ip)
 {
 	int len;
 
@@ -1586,8 +1462,7 @@ optgetaddr(uint8_t *p, int op, uint8_t *ip)
 }
 
 /* expect at most n addresses; ip[] only has room for that many */
-int
-optgetaddrs(uint8_t *p, int op, uint8_t *ip, int n)
+int optgetaddrs(uint8_t *p, int op, uint8_t *ip, int n)
 {
 	int len, i;
 
@@ -1604,8 +1479,7 @@ optgetaddrs(uint8_t *p, int op, uint8_t *ip, int n)
 }
 
 /* expect at most n addresses; ip[] only has room for that many */
-int
-optgetp9addrs(uint8_t *ap, int op, uint8_t *ip, int n)
+int optgetp9addrs(uint8_t *ap, int op, uint8_t *ip, int n)
 {
 	int len, i, slen, addrs;
 	char *p;
@@ -1626,8 +1500,7 @@ optgetp9addrs(uint8_t *ap, int op, uint8_t *ip, int n)
 	return addrs;
 }
 
-int
-optgetvec(uint8_t *p, int op, uint8_t *v, int n)
+int optgetvec(uint8_t *p, int op, uint8_t *v, int n)
 {
 	int len;
 
@@ -1641,8 +1514,7 @@ optgetvec(uint8_t *p, int op, uint8_t *v, int n)
 	return len;
 }
 
-int
-optgetstr(uint8_t *p, int op, char *s, int n)
+int optgetstr(uint8_t *p, int op, char *s, int n)
 {
 	int len;
 
@@ -1659,11 +1531,10 @@ optgetstr(uint8_t *p, int op, char *s, int n)
 
 /*
  * sanity check options area
- * 	- options don't overflow packet
- * 	- options end with an OBend
+ *	- options don't overflow packet
+ *	- options end with an OBend
  */
-int
-parseoptions(uint8_t *p, int n)
+int parseoptions(uint8_t *p, int n)
 {
 	int code, len, nin = n;
 
@@ -1676,8 +1547,7 @@ parseoptions(uint8_t *p, int n)
 			continue;
 		if (n == 0) {
 			warning(
-			    "parseoptions: bad option: 0x%ux: truncated: "
-			    "opt length = %d",
+			    "parseoptions: bad option: 0x%x: truncated: opt length = %d",
 			    code, nin);
 			return -1;
 		}
@@ -1688,8 +1558,7 @@ parseoptions(uint8_t *p, int n)
 		      option[code].name, code, len, n);
 		if (len > n) {
 			warning(
-			    "parseoptions: bad option: 0x%ux: %d > %d: "
-			    "opt length = %d",
+			    "parseoptions: bad option: 0x%x: %d > %d: opt length = %d",
 			    code, len, n, nin);
 			return -1;
 		}
@@ -1704,19 +1573,17 @@ parseoptions(uint8_t *p, int n)
 
 /*
  * sanity check received packet:
- * 	- magic is dhcp magic
- * 	- options don't overflow packet
+ *	- magic is dhcp magic
+ *	- options don't overflow packet
  */
-Bootp *
-parsebootp(uint8_t *p, int n)
+struct bootp *parsebootp(uint8_t *p, int n)
 {
-	Bootp *bp;
+	struct bootp *bp;
 
-	bp = (Bootp *)p;
+	bp = (struct bootp *)p;
 	if (n < bp->optmagic - p) {
 		warning(
-		    "parsebootp: short bootp packet; with options, "
-		    "need %d bytes, got %d",
+		    "parsebootp: short bootp packet; with options, need %d bytes, got %d",
 		    bp->optmagic - p, n);
 		return NULL;
 	}
@@ -1737,7 +1604,7 @@ parsebootp(uint8_t *p, int n)
 		return NULL;
 	}
 	if (memcmp(optmagic, p, 4) != 0) {
-		warning("parsebootp: bad opt magic %ux %ux %ux %ux",
+		warning("parsebootp: bad opt magic %x %x %x %x",
 		        p[0], p[1], p[2], p[3]);
 		return NULL;
 	}
@@ -1750,13 +1617,12 @@ parsebootp(uint8_t *p, int n)
 }
 
 /* write out an ndb entry */
-void
-writendb(char *s, int n, int append)
+void writendb(char *s, int n, int append)
 {
 	char file[64];
 	int fd;
 
-	snprintf(file, sizeof file, "%s/ndb", conf.mpoint);
+	snprintf(file, sizeof(file), "%s/ndb", conf.mpoint);
 	if (append) {
 		fd = open(file, O_WRITE);
 		lseek(fd, 0, 2);
@@ -1767,77 +1633,78 @@ writendb(char *s, int n, int append)
 }
 
 /* put server addresses into the ndb entry */
-void
-putaddrs(char *buf, size_t size, char *attr, uint8_t *a, int len)
+size_t putaddrs(char *buf, size_t size, char *attr, uint8_t *a, int len)
 {
 	int i;
-	char p[256];
+	size_t n;
+	char *p;
 
+	n = 0;
+	p = "";
 	for (i = 0; i < len && validip(a); i += IPaddrlen, a += IPaddrlen) {
-		snprintf(p, sizeof p, "%s=%R\n", attr, a);
-		strlcat(buf, p, size);
+		n += snprintf(buf + n, size - n, "%s%s=%R\n", p, attr, a);
+		p = " ";
 	}
+
+	return n;
 }
 
 /* make an ndb entry and put it into /net/ndb for the servers to see */
-void
-putndb(void)
+void putndb(void)
 {
 	int append;
-	char buf[1024], p[256];
+	char buf[1024];
 	char *np;
-	size_t len;
+	size_t n;
 
 	buf[0] = '\0';
+	n = 0;
 	if (getndb() == 0)
 		append = 1;
 	else {
 		append = 0;
-		snprintf(p, sizeof p, "ip=%R ipmask=%M ipgw=%R\n",
-		         conf.laddr, conf.mask, conf.gaddr);
-		strlcat(buf, p, sizeof buf);
+		n += snprintf(buf + n, sizeof(buf) - n, "ip=%R ipmask=%M ipgw=%R\n",
+		              conf.laddr, conf.mask, conf.gaddr);
 	}
-	if ((np = strchr(conf.hostname, '.')) != NULL) {
+	np = strchr(conf.hostname, '.');
+	if (np != NULL) {
 		if (*conf.domainname == 0)
-			strlcpy(conf.domainname, np + 1, sizeof(conf.domainname));
+			snprintf(conf.domainname, sizeof(conf).domainname, "%s", np + 1);
 		*np = 0;
 	}
-	if (*conf.hostname) {
-		snprintf(p, sizeof(p), "\tsys=%s\n", conf.hostname);
-		strlcat(buf, p, sizeof buf);
-	}
-	if (*conf.domainname) {
-		snprintf(p, sizeof p, "\tdom=%s.%s\n", conf.hostname, conf.domainname);
-		strlcat(buf, p, sizeof buf);
-	}
+	if (*conf.hostname)
+		n += snprintf(buf + n, sizeof(buf) - n, "\tsys=%s\n", conf.hostname);
+	if (*conf.domainname)
+		n += snprintf(buf + n, sizeof(buf) - n, "\tdom=%s.%s\n",
+		              conf.hostname, conf.domainname);
 	if (validip(conf.fs))
-		putaddrs(buf, sizeof buf, "\tfs", conf.fs, sizeof conf.fs);
+		n += putaddrs(buf + n, sizeof(buf) - n, "\tfs",
+		              conf.fs, sizeof(conf).fs);
 	if (validip(conf.auth))
-		putaddrs(buf, sizeof buf, "\tauth", conf.auth, sizeof conf.auth);
+		n += putaddrs(buf + n, sizeof(buf) - n, "\tauth",
+		              conf.auth, sizeof(conf).auth);
 	if (validip(conf.dns))
-		putaddrs(buf, sizeof buf, "\tdns", conf.dns, sizeof conf.dns);
+		n += putaddrs(buf + n, sizeof(buf) - n, "\tdns",
+		              conf.dns, sizeof(conf).dns);
 	if (validip(conf.ntp))
-		putaddrs(buf, sizeof buf, "\tntp", conf.ntp, sizeof conf.ntp);
-	if (ndboptions) {
-		snprintf(p, sizeof p, "%s\n", ndboptions);
-		strlcat(buf, p, sizeof buf);
-	}
-	len = strlen(buf);
-	if (len > 0)
-		writendb(buf, len, append);
+		n += putaddrs(buf + n, sizeof(buf) - n, "\tntp",
+		              conf.ntp, sizeof(conf).ntp);
+	if (ndboptions)
+		n += snprintf(buf + n, sizeof(buf) - n, "%s\n", ndboptions);
+	if (n > 0)
+		writendb(buf, n, append);
 }
 
 /* get an ndb entry someone else wrote */
-int
-getndb(void)
+int getndb(void)
 {
 	char buf[1024];
 	int fd, n;
 	char *p;
 
-	snprintf(buf, sizeof buf, "%s/ndb", conf.mpoint);
+	snprintf(buf, sizeof(buf), "%s/ndb", conf.mpoint);
 	fd = open(buf, O_RDONLY);
-	n = read(fd, buf, sizeof buf - 1);
+	n = read(fd, buf, sizeof(buf) - 1);
 	close(fd);
 	if (n <= 0)
 		return -1;
@@ -1851,13 +1718,12 @@ getndb(void)
 }
 
 /* tell a server to refresh */
-void
-tweakserver(char *server)
+void tweakserver(char *server)
 {
 	int fd;
 	char file[64];
 
-	snprintf(file, sizeof file, "%s/%s", conf.mpoint, server);
+	snprintf(file, sizeof(file), "%s/%s", conf.mpoint, server);
 	fd = open(file, O_RDWR);
 	if (fd < 0)
 		return;
@@ -1866,16 +1732,14 @@ tweakserver(char *server)
 }
 
 /* tell all servers to refresh their information */
-void
-tweakservers(void)
+void tweakservers(void)
 {
 	tweakserver("dns");
 	tweakserver("cs");
 }
 
 /* return number of networks */
-int
-nipifcs(char *net)
+int nipifcs(char *net)
 {
 	int n;
 	struct ipifc *nifc;
@@ -1901,15 +1765,13 @@ nipifcs(char *net)
 }
 
 /* return true if this is a valid v4 address */
-int
-validip(uint8_t *addr)
+int validip(uint8_t *addr)
 {
 	return ipcmp(addr, IPnoaddr) != 0 && ipcmp(addr, v4prefix) != 0;
 }
 
 /* look for an action */
-int
-parseverb(char *name)
+int parseverb(char *name)
 {
 	int i;
 
@@ -1920,8 +1782,7 @@ parseverb(char *name)
 }
 
 /* get everything out of ndb */
-void
-ndbconfig(void)
+void ndbconfig(void)
 {
 	int nattr, nauth = 0, ndns = 0, nfs = 0, ok;
 	char etheraddr[32];
@@ -1939,7 +1800,7 @@ ndbconfig(void)
 		fprintf(stderr, "can't read hardware address");
 		exit(-1);
 	}
-	snprintf(etheraddr, sizeof etheraddr, "%E", conf.hwa);
+	snprintf(etheraddr, sizeof(etheraddr), "%E", conf.hwa);
 	nattr = 0;
 	attrs[nattr++] = "ip";
 	attrs[nattr++] = "ipmask";
@@ -1978,11 +1839,10 @@ ndbconfig(void)
 	}
 }
 
-int
-addoption(char *opt)
+int addoption(char *opt)
 {
 	int i;
-	Option *o;
+	struct option *o;
 
 	if (opt == NULL)
 		return -1;
@@ -1997,77 +1857,73 @@ addoption(char *opt)
 	return -1;
 }
 
-char *
-optgetx(uint8_t *p, uint8_t opt)
+char *optgetx(uint8_t *p, uint8_t opt)
 {
 	int i, n;
 	uint32_t x;
-	char *s, *ns;
-	char str[256];
+	char str[256], buf[1024];
 	uint8_t ip[IPaddrlen], ips[16 * IPaddrlen], vec[256];
-	Option *o;
+	size_t l;
+	struct option *o;
 
 	o = &option[opt];
 	if (o->name == NULL)
 		return NULL;
 
-	s = NULL;
+	memset(buf, '\0', sizeof(buf));
 	switch (o->type) {
 	case Taddr:
 		if (optgetaddr(p, opt, ip))
-			asprintf(&s, "%s=%R", o->name, ip);
+			snprintf(buf, sizeof(buf), "%s=%R", o->name, ip);
 		break;
 	case Taddrs:
 		n = optgetaddrs(p, opt, ips, 16);
 		if (n > 0)
-			asprintf(&s, "%s=%R", o->name, ips);
+			l = snprintf(buf, sizeof(buf), "%s=%R", o->name, ips);
 		for (i = 1; i < n; i++) {
-			asprintf(&ns, "%s %s=%R",
-			         s, o->name, &ips[i * IPaddrlen]);
-			free(s);
-			s = ns;
+			l += snprintf(buf + l, sizeof(buf) - l, " %s=%R",
+			              o->name, &ips[i * IPaddrlen]);
 		}
 		break;
 	case Tulong:
 		x = optgetulong(p, opt);
 		if (x != 0)
-			asprintf(&s, "%s=%lud", o->name, x);
+			snprintf(buf, sizeof(buf), "%s=%lud", o->name, x);
 		break;
 	case Tbyte:
 		x = optgetbyte(p, opt);
 		if (x != 0)
-			asprintf(&s, "%s=%lud", o->name, x);
+			snprintf(buf, sizeof(buf), "%s=%lud", o->name, x);
 		break;
 	case Tstr:
-		if (optgetstr(p, opt, str, sizeof str))
-			asprintf(&s, "%s=%s", o->name, str);
+		if (optgetstr(p, opt, str, sizeof(str)))
+			snprintf(buf, sizeof(buf), "%s=%s", o->name, str);
 		break;
 	case Tvec:
-		n = optgetvec(p, opt, vec, sizeof vec);
+		n = optgetvec(p, opt, vec, sizeof(vec));
 		if (n > 0) /* what's %H?  it's not installed */
-			asprintf(&s, "%s=%.*H", o->name, n, vec);
+			snprintf(buf, sizeof(buf), "%s=%.*H", o->name, n, vec);
 		break;
 	}
-	return s;
+	return strdup(buf);
 }
 
-void
-getoptions(uint8_t *p)
+void getoptions(uint8_t *p)
 {
 	int i;
-	char *s, *t;
+	char buf[1024];
+	char *s;
 
 	for (i = COUNT_OF(defrequested); i < nrequested; i++) {
 		s = optgetx(p, requested[i]);
-		if (s != NULL)
-			DEBUG("%s ", s);
-		if (ndboptions == NULL)
-			asprintf(&ndboptions, "\t%s", s);
-		else {
-			t = ndboptions;
-			asprintf(&ndboptions, "\t%s%s", s, t);
-			free(t);
-		}
+		if (s == NULL)
+			continue;
+		DEBUG("%s ", s);
+		snprintf(buf, sizeof(buf),
+		         (ndboptions == NULL) ? "\t%s" : "\t%s%s",
+		         s, ndboptions);
+		free(ndboptions);
+		ndboptions = strdup(buf);
 		free(s);
 	}
 }
